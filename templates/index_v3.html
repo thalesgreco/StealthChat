@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat P2P Secreto</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f8f9fa;
+        }
+
+        #chat {
+            width: 100%;
+            height: 300px;
+            border: 1px solid #ccc;
+            padding: 10px;
+            overflow-y: auto;
+            background-color: #fff;
+        }
+
+        #waiting {
+            display: none;
+            font-style: italic;
+        }
+
+        #messageArea {
+            margin-top: 15px;
+        }
+
+        #login input {
+            margin-bottom: 10px;
+        }
+    </style>
+    <link rel="icon" href="data:,">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.0/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+</head>
+
+<body>
+
+    <div class="container mt-5">
+        <h3 class="text-center">Chat Secreto P2P</h3>
+
+        <div id="login" class="card p-4 mt-4">
+            <div class="form-group">
+                <label for="room">Sala:</label>
+                <input type="text" id="room" class="form-control" placeholder="Digite a sala...">
+            </div>
+            <div class="form-group">
+                <label for="password">Senha Compartilhada:</label>
+                <input type="password" id="password" class="form-control" placeholder="Digite a senha...">
+            </div>
+            <button class="btn btn-primary btn-block" onclick="joinChat()">Entrar na Sala</button>
+        </div>
+
+        <div id="status" class="alert alert-info mt-3" style="display: none;"></div>
+
+        <div id="chat" class="mt-4 card p-4 flex-grow-1" style="display: none; height: calc(100vh - 250px);"></div>
+
+        <div id="messageArea" class="mt-3" style="display: none;">
+            <div class="input-group">
+                <input type="text" id="messageInput" class="form-control" placeholder="Digite sua mensagem..." onkeyup="if(event.key === 'Enter') sendMessage()">
+                <div class="input-group-append">
+                    <button class="btn btn-success" onclick="sendMessage()">Enviar</button>
+                    <button id="record-button" class="btn btn-warning" onmousedown="startRecording()" onmouseup="stopRecording()" onmouseleave="stopRecording()" ontouchstart="startRecording()" ontouchend="stopRecording()" disabled>Gravar Áudio</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <button id="mic-button">Enable Microphone</button>
+
+<script> 
+    let socket = io();
+    let room;
+    let privateKey, publicKey, sharedKey;
+    let AESKey;
+    let chatDiv = document.getElementById('chat');
+    let statusDiv = document.getElementById('status');
+
+    const p = 2147483647;
+    const g = 5;
+
+    privateKey = Math.floor(Math.random() * 100000000);
+    publicKey = modExp(g, privateKey, p);
+    console.log('Private Key', privateKey);
+    console.log('Public Key', publicKey);
+
+    function modExp(base, exponent, modulus) {
+        if (modulus === 1) return 0;
+        let result = BigInt(1);
+        base = BigInt(base) % BigInt(modulus);
+        while (exponent > 0) {
+            if (exponent % 2 === 1) { // Se o expoente for ímpar
+                result = (result * base) % BigInt(modulus);
+            }
+            exponent = Math.floor(exponent / 2); // Divide o expoente por 2
+            base = (base * base) % BigInt(modulus); // Eleva o base ao quadrado
+        }
+        return result;
+    }
+
+    function stringToInt(message) {
+        let bytes = new TextEncoder().encode(message);
+        let intValue = BigInt(0);
+        for (let i = 0; i < bytes.length; i++) {
+            intValue = (intValue << BigInt(8)) + BigInt(bytes[i]);
+        }
+        return intValue;
+    }
+
+    function blobToBase64(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result.split(',')[1]); // Retira o cabeçalho data URI
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    function escapeHTML(str) {
+        return str
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function intToString(intValue) {
+        let bytes = [];
+        while (intValue > 0) {
+            bytes.unshift(Number(intValue & BigInt(255)));
+            intValue = intValue >> BigInt(8);
+        }
+        let decoder = new TextDecoder();
+        return decoder.decode(new Uint8Array(bytes));
+    }
+
+    function generateSharedKey(partnerKey)
+    {
+        console.log("partnerkey", partnerKey);
+        console.log("privatekey", privateKey);
+        let key = modExp(partnerKey, privateKey, p);
+        console.log("generated shared key", key);
+        return key;
+    }
+
+    function addMessageToChat(align, type, user, message) {
+        let sanitazed = escapeHTML(message);
+        chatDiv.innerHTML += `<div class="row"><div class="col d-flex justify-content-${align}"><div id="status" class="alert alert-${type} mt-3"><strong>${user}:</strong> ${sanitazed}<div id="status" class="alert alert-info mt-3" style="display: none;"></div></div>`;
+        chatDiv.scrollTop = chatDiv.scrollHeight;
+    }
+
+    function AESEncrypt(msg, key)
+    {
+        console.log('msg', msg);
+        console.log('key', key);
+        const encryptMessage = CryptoJS.AES.encrypt(msg.toString(), key.toString()).toString();
+        console.log('Mensagem Criptografada:', encryptMessage);
+        return encryptMessage;
+    }
+
+    function AESDecrypt(msg, key)
+    {
+        console.log("Mensagem cripto partner", msg)
+        const bytes = CryptoJS.AES.decrypt(msg, key);
+        console.log('bytes', bytes);
+        const decryptMessage = bytes.toString(CryptoJS.enc.Utf8);
+        console.log('Mensagem Descriptografada:', decryptMessage);
+        console.log('bytes', bytes);
+        return decryptMessage;
+    }
+
+    function encryptMessage(message)
+    {
+        let encrypted = stringToInt(message) * BigInt(sharedKey);
+        return encrypted;
+    }
+
+    function decryptMessage(message)
+    {
+        let decrypted = intToString(BigInt(message) / BigInt(sharedKey));
+        return decrypted;
+    }
+
+    function joinChat() 
+    {
+        AESKey = document.getElementById("password").value;
+        if (!AESKey) 
+        {
+            alert("Insira uma senha!");
+            return;
+        }
+        room = document.getElementById("room").value;
+
+        if (!room) 
+        {
+            alert("Insira uma sala!");
+            return;
+        }
+
+        socket.emit('join', {room: room});
+        document.getElementById("login").style.display = "none";
+        statusDiv.style.display = "block";
+    }
+
+    socket.on('disconnect', function() {
+    console.log('Você foi desconectado do servidor.');
+    // Aqui você pode atualizar a UI, exibir uma mensagem, etc.
+});
+
+    function establishChat()
+    {
+        console.log('Estabelecendo Chat');
+        statusDiv.style.display = "none";
+        chatDiv.style.display = "block";
+        document.getElementById("messageArea").style.display = "block";
+    }
+
+    function sendMessage()
+    {
+        let message = document.getElementById("messageInput").value;
+        if (!message) return;
+
+        let cryptoMessage = encryptMessage(message);
+        let encryptedMessage = AESEncrypt(cryptoMessage, AESKey);
+
+        socket.emit("encrypted_message", {"room": room, "encrypted_message": encryptedMessage});
+        addMessageToChat("end", "success", "Voce", message);
+        document.getElementById("messageInput").value = '';
+        console.log('Mensagem enviada', encryptedMessage);
+    }
+
+    socket.on('waiting', function(data) {
+        statusDiv.innerHTML = '';
+        statusDiv.innerHTML = data.message;
+    });
+
+    socket.on('room_full', function(data) {
+        statusDiv.innerHTML = '';
+        statusDiv.innerHTML = data.message;
+        alert("A sala esta cheia. Tente outra sala ou aguarde...");
+        setTimeout(() => {
+            location.reload(); // Reinicia a página após um pequeno atraso
+        }, 300);
+    });
+
+    socket.on('partner_disconnect', function(data) {
+        addMessageToChat("center", "danger", "Sistema", data.message);
+        statusDiv.innerHTML = data.message;
+        document.getElementById('messageInput').disabled = true;
+        document.getElementById('messageInput').placeholder = "Aguardando amigo se conectar...";
+    });
+
+    socket.on('connected', function(data) {
+        statusDiv.innerHTML = '';
+        statusDiv.innerHTML = data.message;
+        socket.emit("exchange_keys", {"room": room, "public_key": AESEncrypt(publicKey, AESKey)})
+        return establishChat();
+    });
+
+    socket.on('disconnect', function() {
+        console.log('Você foi desconectado do servidor.');
+    });
+    
+    socket.on('connect', function() {
+        console.log("Reconectado ao servidor");
+    
+        // Após a reconexão, reentrar na sala automaticamente
+        if (room) {
+            addMessageToChat("center", "warning", "Sistema", "Voce perdeu a conexao e esta sendo reconectado ao chat! Aguarde.");
+            socket.emit('join', { room: room });
+            console.log("Reentrando na sala:", room);
+        }
+    });
+
+    socket.on('start_key_exchange', function(data) {
+        statusDiv.innerHTML = data.message;
+        let encryptedKey = AESEncrypt(publicKey, AESKey);
+        addMessageToChat("center", "warning", "Sistema", "Iniciando seguranca do chat! Aguarde.");
+        console.log('Iniciando Key Exchange', encryptedKey);
+        socket.emit('exchange_keys', {'room': room, 'public_key': encryptedKey});
+    });
+
+    socket.on('key_exchange', function(data) {
+        if (data.type === "key_exchange") {
+            console.log('Key exchange partner', data.public_key);
+            sharedKey = generateSharedKey(AESDecrypt(data.public_key, AESKey));
+            if (sharedKey === 0n) {
+                alert("Chave compartilhada incompatível. Verifique a SENHA novamente!");
+                //socket.emit('disconnect', { room: room });
+                setTimeout(() => {
+                    location.reload(); // Reinicia a página após um pequeno atraso
+                }, 1000);
+            }
+            addMessageToChat("center", "warning", "Sistema", "Chat Seguro estabelecido! Voce pode iniciar a conversa.");
+            console.log('Chave trocada', sharedKey);
+            addMessageToChat("center", "info", "Sistema", `Chave Compartilhada: ${sharedKey}`);
+            document.getElementById('messageInput').disabled = false;
+            document.getElementById('messageInput').placeholder = "Digite sua mensagem...";
+        }
+    });
+
+    socket.on('encrypted_message', function(data) {
+        console.log('mensagem recebida', data);
+        if (data.type === "encrypted_message") {
+            console.log('mensagem crypto recebida', data.encrypted_message);
+            let message = decryptMessage(AESDecrypt(data.encrypted_message, AESKey));
+            console.log('mensagem recebida', message);
+            addMessageToChat("start", "dark", "Amigo", message);
+        }
+    });  
+
+    socket.onAny((event, data) => {
+        console.log(`Evento recebido: ${event}`, data);
+    });
+
+    //Audio Crypt and Functions to send and receive:
+        //Audio Vars
+        let mediaRecorder;
+        let audioChunks = [];
+        let mediaStream;
+
+        const micButton = document.getElementById('mic-button');
+        const recButton = document.getElementById('record-button');
+        //const statusText = document.getElementById('status');
+
+        micButton.addEventListener('click', () => {
+            // Request microphone access
+            navigator.mediaDevices.getUserMedia({ audio: true })
+                .then((stream) => {
+                    // Access granted
+                    //statusText.textContent = "Microphone access granted!";
+                    micButton.disabled = true; // Disable button after permission granted
+                    recButton.disabled = false;
+                    stream.getAudioTracks()[0].stop();
+                    // Here you could add the functionality to start recording audio
+                })
+                .catch((err) => {
+                    // Access denied or error
+                    console.error("Error accessing microphone: ", err);
+                    //statusText.textContent = "Microphone access denied!";
+                });
+        });
+
+        function startRecording() {
+            document.getElementById('record-button').className = "btn btn-danger";
+            navigator.mediaDevices.getUserMedia({ audio: true })
+                .then(stream => {
+                    mediaStream = stream;
+                    mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/mp4' });
+                    mediaRecorder.start();
+        
+                    mediaRecorder.addEventListener("dataavailable", event => {
+                        audioChunks.push(event.data);
+        
+                    });
+        
+                    mediaRecorder.addEventListener("stop", () => {
+                        const audioBlob = new Blob(audioChunks, { type: 'video/mp4' });
+                        const audioUrl = URL.createObjectURL(audioBlob);
+                        const audio = new Audio(audioUrl);
+                        // Exibe o áudio no chat antes de enviar
+                        addAudioToChat("end", "success", "Voce", audioUrl);
+        
+                        // Converte o áudio em base64 e envia
+                        const reader = new FileReader();
+                        reader.readAsDataURL(audioBlob);
+                        reader.onloadend = () => {
+                            let base64AudioMessage = reader.result.split(',')[1];
+                            let encryptedAudioMessage = AESEncrypt(base64AudioMessage, AESKey);
+        
+                            socket.emit("audio_message", {"room": room, "encrypted_audio": encryptedAudioMessage, "type": "audio"});
+                        };
+                        mediaStream.getAudioTracks()[0].stop();
+                        audioChunks = [];  // Limpa os pedaços de áudio gravados
+                        //mediaStream.getTracks().forEach(track => track.stop());
+                    });
+        
+                    setTimeout(() => {
+                        mediaStream.getAudioTracks()[0].stop(); // Para a gravação após 5 segundos
+                        document.getElementById('record-button').className = "btn btn-warning";
+                    }, 60000);  // Ajuste o tempo de gravação conforme necessário
+                });
+                
+        }
+
+
+    function stopRecording() {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaStream.getAudioTracks()[0].stop(); // Para a gravação
+            //mediaStream.getTracks().forEach(track => track.stop());
+            document.getElementById('record-button').className = "btn btn-warning";
+        }
+    }
+
+    function addAudioToChat(align, type, user, audioUrl) {
+        chatDiv.innerHTML += `<div class="row"><div class="col d-flex justify-content-${align}">
+            <div class="alert alert-${type} mt-3">
+                <strong>${user}:</strong> <audio controls src="${audioUrl}"></audio>
+            </div></div></div>`;
+        chatDiv.scrollTop = chatDiv.scrollHeight;
+    }
+    
+    socket.on('audio_message', function(data) {
+        let decryptedAudio = AESDecrypt(data.encrypted_audio, AESKey);
+
+        // Converta a mensagem base64 de volta para um URL de áudio
+        let audioBlob = new Blob([Uint8Array.from(atob(decryptedAudio), c => c.charCodeAt(0))], { type: 'video/mp4' });
+        let audioUrl = URL.createObjectURL(audioBlob);
+
+        addAudioToChat("start", "dark", "Amigo", audioUrl);
+    });
+    
+
+</script>
+
+</body>
+</html>

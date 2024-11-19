@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat P2P Secreto</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f8f9fa;
+        }
+
+        #chat {
+            width: 100%;
+            height: 300px;
+            border: 1px solid #ccc;
+            padding: 10px;
+            overflow-y: auto;
+            background-color: #fff;
+        }
+
+        #waiting {
+            display: none;
+            font-style: italic;
+        }
+
+        #messageArea {
+            margin-top: 15px;
+        }
+
+        #login input {
+            margin-bottom: 10px;
+        }
+    </style>
+    <link rel="icon" href="data:,">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.0/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+</head>
+
+<body>
+
+    <div class="container mt-5">
+        <h3 class="text-center">Chat Secreto P2P</h3>
+
+        <div id="login" class="card p-4 mt-4">
+            <div class="form-group">
+                <label for="room">Sala:</label>
+                <input type="text" id="room" class="form-control" placeholder="Digite a sala...">
+            </div>
+            <div class="form-group">
+                <label for="password">Senha Compartilhada:</label>
+                <input type="password" id="password" class="form-control" placeholder="Digite a senha...">
+            </div>
+            <button class="btn btn-primary btn-block" onclick="joinChat()">Entrar na Sala</button>
+        </div>
+
+        <div id="status" class="alert alert-info mt-3" style="display: none;"></div>
+
+        <div id="chat" class="mt-4 card p-4 flex-grow-1" style="display: none; height: calc(100vh - 250px);"></div>
+
+        <div id="messageArea" class="mt-3" style="display: none;">
+            <div class="input-group">
+                <input type="text" id="messageInput" class="form-control" placeholder="Digite sua mensagem..." onkeyup="if(event.key === 'Enter') sendMessage()">
+                <div class="input-group-append">
+                    <button class="btn btn-success" onclick="sendMessage()">Enviar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script> 
+    let socket = io();
+    let room;
+    let privateKey, publicKey, sharedKey;
+    let AESKey;
+    let chatDiv = document.getElementById('chat');
+    let statusDiv = document.getElementById('status')
+
+    const p = 2147483647;
+    const g = 5;
+
+    privateKey = Math.floor(Math.random() * 100000000);
+    publicKey = modExp(g, privateKey, p);
+    console.log('Private Key', privateKey);
+    console.log('Public Key', publicKey);
+
+    function modExp(base, exponent, modulus) {
+        if (modulus === 1) return 0;
+        let result = BigInt(1);
+        base = BigInt(base) % BigInt(modulus);
+        while (exponent > 0) {
+            if (exponent % 2 === 1) { // Se o expoente for ímpar
+                result = (result * base) % BigInt(modulus);
+            }
+            exponent = Math.floor(exponent / 2); // Divide o expoente por 2
+            base = (base * base) % BigInt(modulus); // Eleva o base ao quadrado
+        }
+        return result;
+    }
+
+    function stringToInt(message) {
+        let bytes = new TextEncoder().encode(message);
+        let intValue = BigInt(0);
+        for (let i = 0; i < bytes.length; i++) {
+            intValue = (intValue << BigInt(8)) + BigInt(bytes[i]);
+        }
+        return intValue;
+    }
+
+    function escapeHTML(str) {
+        return str
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function intToString(intValue) {
+        let bytes = [];
+        while (intValue > 0) {
+            bytes.unshift(Number(intValue & BigInt(255)));
+            intValue = intValue >> BigInt(8);
+        }
+        let decoder = new TextDecoder();
+        return decoder.decode(new Uint8Array(bytes));
+    }
+
+    function generateSharedKey(partnerKey)
+    {
+        console.log("partnerkey", partnerKey);
+        console.log("privatekey", privateKey);
+        let key = modExp(partnerKey, privateKey, p);
+        console.log("generated shared key", key);
+        return key;
+    }
+
+    function addMessageToChat(align, type, user, message) {
+        let sanitazed = escapeHTML(message);
+        chatDiv.innerHTML += `<div class="row"><div class="col d-flex justify-content-${align}"><div id="status" class="alert alert-${type} mt-3"><strong>${user}:</strong> ${sanitazed}<div id="status" class="alert alert-info mt-3" style="display: none;"></div></div>`;
+        chatDiv.scrollTop = chatDiv.scrollHeight;
+    }
+
+    function AESEncrypt(msg, key)
+    {
+        console.log('msg', msg);
+        console.log('key', key);
+        const encryptMessage = CryptoJS.AES.encrypt(msg.toString(), key.toString()).toString();
+        console.log('Mensagem Criptografada:', encryptMessage);
+        return encryptMessage;
+    }
+
+    function AESDecrypt(msg, key)
+    {
+        console.log("Mensagem cripto partner", msg)
+        const bytes = CryptoJS.AES.decrypt(msg, key);
+        console.log('bytes', bytes);
+        const decryptMessage = bytes.toString(CryptoJS.enc.Utf8);
+        console.log('Mensagem Descriptografada:', decryptMessage);
+        console.log('bytes', bytes);
+        return decryptMessage;
+    }
+
+    function encryptMessage(message)
+    {
+        let encrypted = stringToInt(message) * BigInt(sharedKey);
+        return encrypted;
+    }
+
+    function decryptMessage(message)
+    {
+        let decrypted = intToString(BigInt(message) / BigInt(sharedKey));
+        return decrypted;
+    }
+
+    function joinChat() 
+    {
+        AESKey = document.getElementById("password").value;
+        if (!AESKey) 
+        {
+            alert("Insira uma senha!");
+            return;
+        }
+        room = document.getElementById("room").value;
+
+        if (!room) 
+        {
+            alert("Insira uma sala!");
+            return;
+        }
+
+        socket.emit('join', {room: room});
+        document.getElementById("login").style.display = "none";
+        statusDiv.style.display = "block";
+    }
+
+    socket.on('disconnect', function() {
+    console.log('Você foi desconectado do servidor.');
+    // Aqui você pode atualizar a UI, exibir uma mensagem, etc.
+});
+
+    function establishChat()
+    {
+        console.log('Estabelecendo Chat');
+        statusDiv.style.display = "none";
+        chatDiv.style.display = "block";
+        document.getElementById("messageArea").style.display = "block";
+    }
+
+    function sendMessage()
+    {
+        let message = document.getElementById("messageInput").value;
+        if (!message) return;
+
+        let cryptoMessage = encryptMessage(message);
+        let encryptedMessage = AESEncrypt(cryptoMessage, AESKey);
+
+        socket.emit("encrypted_message", {"room": room, "encrypted_message": encryptedMessage});
+        addMessageToChat("end", "success", "Voce", message);
+        document.getElementById("messageInput").value = '';
+        console.log('Mensagem enviada', encryptedMessage);
+    }
+
+    socket.on('waiting', function(data) {
+        statusDiv.innerHTML = '';
+        statusDiv.innerHTML = data.message;
+    });
+
+    socket.on('room_full', function(data) {
+        statusDiv.innerHTML = '';
+        statusDiv.innerHTML = data.message;
+        alert("A sala esta cheia. Tente outra sala ou aguarde...");
+        setTimeout(() => {
+            location.reload(); // Reinicia a página após um pequeno atraso
+        }, 300);
+    });
+
+    socket.on('partner_disconnect', function(data) {
+        addMessageToChat("center", "danger", "Sistema", data.message);
+        statusDiv.innerHTML = data.message;
+        document.getElementById('messageInput').disabled = true;
+        document.getElementById('messageInput').placeholder = "Aguardando amigo se conectar...";
+    });
+
+    socket.on('connected', function(data) {
+        statusDiv.innerHTML = '';
+        statusDiv.innerHTML = data.message;
+        socket.emit("exchange_keys", {"room": room, "public_key": AESEncrypt(publicKey, AESKey)})
+        return establishChat();
+    });
+
+    socket.on('disconnect', function() {
+        console.log('Você foi desconectado do servidor.');
+    });
+    
+    socket.on('connect', function() {
+        console.log("Reconectado ao servidor");
+    
+        // Após a reconexão, reentrar na sala automaticamente
+        if (room) {
+            addMessageToChat("center", "warning", "Sistema", "Voce perdeu a conexao e esta sendo reconectado ao chat! Aguarde.");
+            socket.emit('join', { room: room });
+            console.log("Reentrando na sala:", room);
+        }
+    });
+
+    socket.on('start_key_exchange', function(data) {
+        statusDiv.innerHTML = data.message;
+        let encryptedKey = AESEncrypt(publicKey, AESKey);
+        addMessageToChat("center", "warning", "Sistema", "Iniciando seguranca do chat! Aguarde.");
+        console.log('Iniciando Key Exchange', encryptedKey);
+        socket.emit('exchange_keys', {'room': room, 'public_key': encryptedKey});
+    });
+
+    socket.on('key_exchange', function(data) {
+        if (data.type === "key_exchange") {
+            console.log('Key exchange partner', data.public_key);
+            sharedKey = generateSharedKey(AESDecrypt(data.public_key, AESKey));
+            if (sharedKey === 0n) {
+                alert("Chave compartilhada incompatível. Verifique a SENHA novamente!");
+                //socket.emit('disconnect', { room: room });
+                setTimeout(() => {
+                    location.reload(); // Reinicia a página após um pequeno atraso
+                }, 1000);
+            }
+            addMessageToChat("center", "warning", "Sistema", "Chat Seguro estabelecido! Voce pode iniciar a conversa.");
+            console.log('Chave trocada', sharedKey);
+            addMessageToChat("center", "info", "Sistema", `Chave Compartilhada: ${sharedKey}`);
+            document.getElementById('messageInput').disabled = false;
+            document.getElementById('messageInput').placeholder = "Digite sua mensagem...";
+        }
+    });
+
+    socket.on('encrypted_message', function(data) {
+        console.log('mensagem recebida', data);
+        if (data.type === "encrypted_message") {
+            console.log('mensagem crypto recebida', data.encrypted_message);
+            let message = decryptMessage(AESDecrypt(data.encrypted_message, AESKey));
+            console.log('mensagem recebida', message);
+            addMessageToChat("start", "dark", "Amigo", message);
+        }
+    });  
+
+    socket.onAny((event, data) => {
+        console.log(`Evento recebido: ${event}`, data);
+    });
+    
+
+</script>
+
+</body>
+</html>

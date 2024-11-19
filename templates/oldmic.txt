@@ -1,0 +1,101 @@
+//Audio Crypt and Functions to send and receive:
+//Audio Vars
+let mediaRecorder;
+let audioChunks = [];
+let mediaStream;
+
+    const micButton = document.getElementById('mic-button');
+    //const statusText = document.getElementById('status');
+
+    micButton.addEventListener('click', () => {
+        // Request microphone access
+        navigator.mediaDevices.getUserMedia({ audio: true })
+            .then((stream) => {
+                // Access granted
+                //statusText.textContent = "Microphone access granted!";
+                micButton.disabled = true; // Disable button after permission granted
+                stream.getAudioTracks()[0].stop();
+                // Here you could add the functionality to start recording audio
+            })
+            .catch((err) => {
+                // Access denied or error
+                console.error("Error accessing microphone: ", err);
+                //statusText.textContent = "Microphone access denied!";
+            });
+    });
+
+    function startRecording() {
+        document.getElementById('record-button').className = "btn btn-danger";
+        navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(stream => {
+                mediaStream = stream;
+                mediaRecorder = new MediaRecorder(stream);
+                mediaRecorder.start();
+    
+                mediaRecorder.addEventListener("dataavailable", event => {
+                    audioChunks.push(event.data);
+    
+                });
+    
+                mediaRecorder.addEventListener("stop", () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/mp3' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    const audio = new Audio(audioUrl);
+                    mediaStream.getAudioTracks()[0].stop();
+                    // Exibe o áudio no chat antes de enviar
+                    addAudioToChat("end", "success", "Voce", audioUrl);
+    
+                    // Converte o áudio em base64 e envia
+                    const reader = new FileReader();
+                    reader.readAsDataURL(audioBlob);
+                    reader.onloadend = () => {
+                        let base64AudioMessage = reader.result.split(',')[1];
+                        let encryptedAudioMessage = AESEncrypt(base64AudioMessage, AESKey);
+    
+                        socket.emit("audio_message", {"room": room, "encrypted_audio": encryptedAudioMessage, "type": "audio"});
+                    };
+                    //mediaStream.getAudioTracks()[0].stop();
+                    audioChunks = [];  // Limpa os pedaços de áudio gravados
+                    //mediaStream.getTracks().forEach(track => track.stop());
+                });
+    
+                setTimeout(() => {
+                    mediaStream.getAudioTracks()[0].stop(); // Para a gravação após 5 segundos
+                    document.getElementById('record-button').className = "btn btn-warning";
+                }, 60000);  // Ajuste o tempo de gravação conforme necessário
+            });
+            
+    }
+
+
+    function stopRecording() {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaStream.getAudioTracks()[0].stop(); // Para a gravação
+            //mediaStream.getTracks().forEach(track => track.stop());
+            document.getElementById('record-button').className = "btn btn-warning";
+        }
+    }
+
+    function addAudioToChat(align, type, user, audioUrl) {
+        chatDiv.innerHTML += `<div class="row"><div class="col d-flex justify-content-${align}">
+            <div class="alert alert-${type} mt-3">
+                <strong>${user}:</strong> <audio controls src="${audioUrl}"></audio>
+            </div></div></div>`;
+        chatDiv.scrollTop = chatDiv.scrollHeight;
+    }
+    
+    socket.on('audio_message', function(data) {
+        let decryptedAudio = AESDecrypt(data.encrypted_audio, AESKey);
+
+        // Converta a mensagem base64 de volta para um URL de áudio
+        let audioBlob = new Blob([Uint8Array.from(atob(decryptedAudio), c => c.charCodeAt(0))], { type: 'audio/mp3' });
+        let audioUrl = URL.createObjectURL(audioBlob);
+
+        addAudioToChat("start", "dark", "Amigo", audioUrl);
+    });
+    
+
+</script>
+
+</body>
+</html>
